@@ -77,7 +77,7 @@ function snmpWalk(oid: string): Promise<any[]> {
       (varbinds: any[]) => {
         varbinds.forEach((vb: any) => {
           if (!snmp.isVarbindError(vb)) {
-            results.push(...vb);
+            results.push(vb);
           }
         });
       },
@@ -168,11 +168,11 @@ async function pollBandwidth(): Promise<void> {
     }
 
     for (const vb of inOctets) {
-      const ifIndex = parseInt(vb.oid.split('.').pop());
-      const ifName = ifDescrMap[ifIndex] || `if${ifIndex}`;
-      const currentIn = Number(vb.value) || 0;
-      const currentOut = ifOutMap[ifIndex] || 0;
-      const key = `if_${ifIndex}`;
+  const ifIndex = parseInt(vb.oid.split('.').pop());
+  const ifName = ifDescrMap[ifIndex] || `if${ifIndex}`;
+  const currentIn = toNumber(vb.value);
+  const currentOut = toNumber(ifOutMap[ifIndex]) || 0;
+  const key = `if_${ifIndex}`;
 
       if (prevOctets[key]) {
         const deltaIn = currentIn - prevOctets[key].in;
@@ -223,9 +223,9 @@ async function pollInterfaces(): Promise<void> {
       const ifIndex = parseInt(vb.oid.split('.').pop());
       const ifData = {
         interface_index: ifIndex,
-        interface_name: String(vb.value),
+        interface_name: toString(vb.value),
         status: statusMap[ifIndex] === 1 ? 'up' : 'down',
-        speed: speedMap[ifIndex] || 0,
+        speed: toNumber(speedMap[ifIndex]),
       };
       await InterfaceLog.create(ifData);
       broadcast({ type: 'interface', data: ifData });
