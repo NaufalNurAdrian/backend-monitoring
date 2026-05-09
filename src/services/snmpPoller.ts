@@ -1,42 +1,42 @@
-import * as snmp from 'net-snmp';
-import dotenv from 'dotenv';
-import { WebSocket } from 'ws';
+import * as snmp from "net-snmp";
+import dotenv from "dotenv";
+import { WebSocket } from "ws";
 
-import BandwidthLog from '../models/BandwidthLog.js';
-import ThreatLog from '../models/ThreatLog.js';
-import SessionLog from '../models/SessionLog.js';
-import InterfaceLog from '../models/InterfaceLog.js';
+import BandwidthLog from "../models/BandwidthLog.js";
+import ThreatLog from "../models/ThreatLog.js";
+import SessionLog from "../models/SessionLog.js";
+import InterfaceLog from "../models/InterfaceLog.js";
 
 dotenv.config();
 
 const OIDs = {
   // Interface (RFC1213-MIB) — pakai 32-bit counter
-  ifDescr:        '1.3.6.1.2.1.2.2.1.2',
-  ifOperStatus:   '1.3.6.1.2.1.2.2.1.8',
-  ifSpeed:        '1.3.6.1.2.1.2.2.1.5',
-  ifInOctets:     '1.3.6.1.2.1.2.2.1.10',   // ✅ bukan 31.1.1.1.6
-  ifOutOctets:    '1.3.6.1.2.1.2.2.1.16',   // ✅ bukan 31.1.1.1.10
+  ifDescr: "1.3.6.1.2.1.2.2.1.2",
+  ifOperStatus: "1.3.6.1.2.1.2.2.1.8",
+  ifSpeed: "1.3.6.1.2.1.2.2.1.5",
+  ifInOctets: "1.3.6.1.2.1.2.2.1.10", // ✅ bukan 31.1.1.1.6
+  ifOutOctets: "1.3.6.1.2.1.2.2.1.16", // ✅ bukan 31.1.1.1.10
 
   // PAN-COMMON-MIB — OID yang benar
-  panSessionUtil:    '1.3.6.1.4.1.25461.2.1.2.3.1.0',  // % session utilization
-  panSessionMax:     '1.3.6.1.4.1.25461.2.1.2.3.2.0',  // max sessions
-  panSessionActive:  '1.3.6.1.4.1.25461.2.1.2.3.3.0',  // total active sessions
-  panSessionTCP:     '1.3.6.1.4.1.25461.2.1.2.3.4.0',  // active TCP sessions
-  panSessionUDP:     '1.3.6.1.4.1.25461.2.1.2.3.5.0',  // active UDP sessions
-  panSessionICMP:    '1.3.6.1.4.1.25461.2.1.2.3.6.0',  // active ICMP sessions
+  panSessionUtil: "1.3.6.1.4.1.25461.2.1.2.3.1.0", // % session utilization
+  panSessionMax: "1.3.6.1.4.1.25461.2.1.2.3.2.0", // max sessions
+  panSessionActive: "1.3.6.1.4.1.25461.2.1.2.3.3.0", // total active sessions
+  panSessionTCP: "1.3.6.1.4.1.25461.2.1.2.3.4.0", // active TCP sessions
+  panSessionUDP: "1.3.6.1.4.1.25461.2.1.2.3.5.0", // active UDP sessions
+  panSessionICMP: "1.3.6.1.4.1.25461.2.1.2.3.6.0", // active ICMP sessions
 
   // CPU — HOST-RESOURCES-MIB
-  panCPUMgmt:     '1.3.6.1.2.1.25.3.3.1.2.1',  // management plane CPU
-  panCPUData:     '1.3.6.1.2.1.25.3.3.1.2.2',  // dataplane CPU
+  panCPUMgmt: "1.3.6.1.2.1.25.3.3.1.2.1", // management plane CPU
+  panCPUData: "1.3.6.1.2.1.25.3.3.1.2.2", // dataplane CPU
 
   // Uptime
-  sysUptime:      '1.3.6.1.2.1.25.1.1.0',
+  sysUptime: "1.3.6.1.2.1.25.1.1.0",
 };
 
 const session = snmp.createSession(
   process.env.PALO_ALTO_IP as string,
   process.env.SNMP_COMMUNITY as string,
-  { version: snmp.Version2c }
+  { version: snmp.Version2c },
 );
 
 let prevOctets: Record<string, { in: number; out: number }> = {};
@@ -78,10 +78,14 @@ function snmpWalk(oid: string): Promise<any[]> {
         varbinds.forEach((vb: any) => {
           if (!snmp.isVarbindError(vb)) {
             if (Buffer.isBuffer(vb.value)) {
-              // konversi buffer 4 byte ke number
-              vb.value = vb.value.length >= 4 
-                ? vb.value.readUInt32BE(0) 
-                : vb.value.readUIntBE(0, vb.value.length);
+              if (vb.value.length === 0) {
+                vb.value = 0;
+              } else if (vb.value.length >= 4) {
+                vb.value = vb.value.readUInt32BE(0);
+              } else {
+                // string seperti IP address atau nama interface
+                vb.value = vb.value.toString("utf8").replace(/\0/g, "").trim();
+              }
             }
             results.push(vb);
           }
@@ -90,7 +94,7 @@ function snmpWalk(oid: string): Promise<any[]> {
       (err: any) => {
         if (err) reject(err);
         else resolve(results);
-      }
+      },
     );
   });
 }
@@ -123,13 +127,13 @@ async function pollSystem(): Promise<void> {
     };
 
     await SessionLog.create(sessionData);
-    broadcast({ type: 'session', data: sessionData });
+    broadcast({ type: "session", data: sessionData });
 
     console.log(
-      `[SNMP] Active: ${sessionActive} | Max: ${sessionMax} | CPU Mgmt: ${cpuMgmt}% | CPU Data: ${cpuData}%`
+      `[SNMP] Active: ${sessionActive} | Max: ${sessionMax} | CPU Mgmt: ${cpuMgmt}% | CPU Data: ${cpuData}%`,
     );
   } catch (err) {
-    console.error('[SNMP] System poll error:', (err as Error).message);
+    console.error("[SNMP] System poll error:", (err as Error).message);
   }
 }
 
@@ -144,10 +148,10 @@ async function pollBandwidth(): Promise<void> {
     const interval = parseInt(process.env.POLL_INTERVAL as string) / 1000;
 
     for (let i = 0; i < inOctets.length; i++) {
-      const ifIndex = inOctets[i].oid.split('.').pop();
+      const ifIndex = inOctets[i].oid.split(".").pop();
       const ifName = ifDescrs[i]?.value || `if${ifIndex}`;
-      const currentIn = inOctets[i].value;
-      const currentOut = outOctets[i]?.value || 0;
+      const currentIn = Number(inOctets[i].value) || 0;
+      const currentOut = Number(outOctets[i]?.value) || 0;
       const key = `if_${ifIndex}`;
 
       if (prevOctets[key]) {
@@ -165,13 +169,13 @@ async function pollBandwidth(): Promise<void> {
           mbps_out: mbpsOut,
         };
         await BandwidthLog.create(bwData);
-        broadcast({ type: 'bandwidth', data: bwData });
+        broadcast({ type: "bandwidth", data: bwData });
       }
 
       prevOctets[key] = { in: currentIn, out: currentOut };
     }
   } catch (err) {
-    console.error('[SNMP] Bandwidth poll error:', (err as Error).message);
+    console.error("[SNMP] Bandwidth poll error:", (err as Error).message);
   }
 }
 
@@ -184,18 +188,18 @@ async function pollInterfaces(): Promise<void> {
     ]);
 
     for (let i = 0; i < ifDescrs.length; i++) {
-      const ifIndex = ifDescrs[i].oid.split('.').pop();
+      const ifIndex = ifDescrs[i].oid.split(".").pop();
       const ifData = {
         interface_index: parseInt(ifIndex),
-        interface_name: ifDescrs[i].value,
-        status: ifStatuses[i]?.value === 1 ? 'up' : 'down',
-        speed: ifSpeeds[i]?.value || 0,
+        interface_name: String(ifDescrs[i].value),
+        status: ifStatuses[i]?.value === 1 ? "up" : "down",
+        speed: Number(ifSpeeds[i]?.value) || 0,
       };
       await InterfaceLog.create(ifData);
-      broadcast({ type: 'interface', data: ifData });
+      broadcast({ type: "interface", data: ifData });
     }
   } catch (err) {
-    console.error('[SNMP] Interface poll error:', (err as Error).message);
+    console.error("[SNMP] Interface poll error:", (err as Error).message);
   }
 }
 
@@ -204,8 +208,9 @@ async function pollAll(): Promise<void> {
 }
 
 export function startPoller(): void {
-  console.log(`[SNMP] Poller started — interval: ${process.env.POLL_INTERVAL}ms`);
+  console.log(
+    `[SNMP] Poller started — interval: ${process.env.POLL_INTERVAL}ms`,
+  );
   pollAll();
   setInterval(pollAll, parseInt(process.env.POLL_INTERVAL as string));
 }
-
