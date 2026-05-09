@@ -10,33 +10,24 @@ import InterfaceLog from "../models/InterfaceLog.js";
 dotenv.config();
 
 const OIDs = {
-  // Interface (RFC1213-MIB) — pakai 32-bit counter
-  ifDescr: "1.3.6.1.2.1.2.2.1.2",
-  ifOperStatus: "1.3.6.1.2.1.2.2.1.8",
-  ifSpeed: "1.3.6.1.2.1.2.2.1.5",
-  ifInOctets: "1.3.6.1.2.1.2.2.1.10", // ✅ bukan 31.1.1.1.6
-  ifOutOctets: "1.3.6.1.2.1.2.2.1.16", // ✅ bukan 31.1.1.1.10
-
-  // PAN-COMMON-MIB — OID yang benar
-  panSessionUtil: "1.3.6.1.4.1.25461.2.1.2.3.1.0", // % session utilization
-  panSessionMax: "1.3.6.1.4.1.25461.2.1.2.3.2.0", // max sessions
-  panSessionActive: "1.3.6.1.4.1.25461.2.1.2.3.3.0", // total active sessions
-  panSessionTCP: "1.3.6.1.4.1.25461.2.1.2.3.4.0", // active TCP sessions
-  panSessionUDP: "1.3.6.1.4.1.25461.2.1.2.3.5.0", // active UDP sessions
-  panSessionICMP: "1.3.6.1.4.1.25461.2.1.2.3.6.0", // active ICMP sessions
-
-  // CPU — HOST-RESOURCES-MIB
-  panCPUMgmt: "1.3.6.1.2.1.25.3.3.1.2.1", // management plane CPU
-  panCPUData: "1.3.6.1.2.1.25.3.3.1.2.2", // dataplane CPU
-
-  // Uptime
-  sysUptime: "1.3.6.1.2.1.25.1.1.0",
+  ifDescr:          "1.3.6.1.2.1.2.2.1.2",
+  ifOperStatus:     "1.3.6.1.2.1.2.2.1.8",
+  ifSpeed:          "1.3.6.1.2.1.2.2.1.5",
+  ifInOctets:       "1.3.6.1.2.1.2.2.1.10",
+  ifOutOctets:      "1.3.6.1.2.1.2.2.1.16",
+  panSessionUtil:   "1.3.6.1.4.1.25461.2.1.2.3.1.0",
+  panSessionMax:    "1.3.6.1.4.1.25461.2.1.2.3.2.0",
+  panSessionActive: "1.3.6.1.4.1.25461.2.1.2.3.3.0",
+  panSessionTCP:    "1.3.6.1.4.1.25461.2.1.2.3.4.0",
+  panSessionUDP:    "1.3.6.1.4.1.25461.2.1.2.3.5.0",
+  panCPUMgmt:       "1.3.6.1.2.1.25.3.3.1.2.1",
+  panCPUData:       "1.3.6.1.2.1.25.3.3.1.2.2",
 };
 
 const session = snmp.createSession(
   process.env.PALO_ALTO_IP as string,
   process.env.SNMP_COMMUNITY as string,
-  { version: snmp.Version2c },
+  { version: snmp.Version2c }
 );
 
 let prevOctets: Record<string, { in: number; out: number }> = {};
@@ -54,16 +45,34 @@ function broadcast(data: unknown): void {
   });
 }
 
+function toNumber(val: any): number {
+  if (val === null || val === undefined) return 0;
+  if (Buffer.isBuffer(val)) {
+    if (val.length === 0) return 0;
+    if (val.length >= 4) return val.readUInt32BE(0);
+    return val.readUIntBE(0, val.length);
+  }
+  return Number(val) || 0;
+}
+
+function toStr(val: any): string {
+  if (Buffer.isBuffer(val)) {
+    return val.toString('utf8').replace(/\0/g, '').trim();
+  }
+  return String(val ?? '');
+}
+
+function getIndex(oid: string): number {
+  return parseInt(oid.split('.').pop() ?? '0');
+}
+
 function snmpGet(oid: string): Promise<number> {
   return new Promise((resolve, reject) => {
     (session.get as any)([oid], (err: any, varbinds: any[]) => {
       if (err) return reject(err);
       const vb = varbinds?.[0];
-      if (!vb) return resolve(0);
-      if (snmp.isVarbindError(vb)) return resolve(0);
-      const val = vb.value;
-      if (Buffer.isBuffer(val)) resolve(val.readUInt32BE(0) || 0);
-      else resolve(Number(val) || 0);
+      if (!vb || snmp.isVarbindError(vb)) return resolve(0);
+      resolve(toNumber(vb.value));
     });
   });
 }
@@ -84,53 +93,23 @@ function snmpWalk(oid: string): Promise<any[]> {
       (err: any) => {
         if (err) reject(err);
         else resolve(results);
-      },
+      }
     );
   });
 }
 
-function toNumber(val: any): number {
-  if (Buffer.isBuffer(val)) {
-    if (val.length === 0) return 0;
-    if (val.length >= 4) return val.readUInt32BE(0);
-    return val.readUIntBE(0, val.length);
-  }
-  return Number(val) || 0;
-}
-
-function toString(val: any): string {
-  if (Buffer.isBuffer(val)) {
-    // Coba UTF-8 dulu
-    const str = val.toString('utf8').replace(/\0/g, '').trim();
-    // Kalau hasilnya printable string, pakai
-    if (/^[\x20-\x7E]*$/.test(str) && str.length > 0) return str;
-    // Kalau tidak, kembalikan sebagai number
-    if (val.length >= 4) return String(val.readUInt32BE(0));
-    return String(val.readUIntBE(0, val.length || 1));
-  }
-  if (typeof val === 'string') return val;
-  return String(val);
-}
-
 async function pollSystem(): Promise<void> {
   try {
-    const [
-      sessionUtil,
-      sessionMax,
-      sessionActive,
-      sessionTCP,
-      sessionUDP,
-      cpuMgmt,
-      cpuData,
-    ] = await Promise.all([
-      snmpGet(OIDs.panSessionUtil),
-      snmpGet(OIDs.panSessionMax),
-      snmpGet(OIDs.panSessionActive),
-      snmpGet(OIDs.panSessionTCP),
-      snmpGet(OIDs.panSessionUDP),
-      snmpGet(OIDs.panCPUMgmt),
-      snmpGet(OIDs.panCPUData),
-    ]);
+    const [sessionUtil, sessionMax, sessionActive, sessionTCP, sessionUDP, cpuMgmt, cpuData] =
+      await Promise.all([
+        snmpGet(OIDs.panSessionUtil),
+        snmpGet(OIDs.panSessionMax),
+        snmpGet(OIDs.panSessionActive),
+        snmpGet(OIDs.panSessionTCP),
+        snmpGet(OIDs.panSessionUDP),
+        snmpGet(OIDs.panCPUMgmt),
+        snmpGet(OIDs.panCPUData),
+      ]);
 
     const sessionData = {
       active_sessions: sessionActive,
@@ -138,15 +117,14 @@ async function pollSystem(): Promise<void> {
       cpu_usage: cpuMgmt,
       memory_usage: cpuData,
     };
-
     await SessionLog.create(sessionData);
-    broadcast({ type: "session", data: sessionData });
+    broadcast({ type: 'session', data: sessionData });
 
-    console.log(
-      `[SNMP] Active: ${sessionActive} | Max: ${sessionMax} | CPU Mgmt: ${cpuMgmt}% | CPU Data: ${cpuData}%`,
-    );
+    await ThreatLog.create({ threat_count: 0, threat_type: 'total', severity: 'mixed' });
+
+    console.log(`[SNMP] Active: ${sessionActive} | Max: ${sessionMax} | CPU: ${cpuMgmt}%`);
   } catch (err) {
-    console.error("[SNMP] System poll error:", (err as Error).message);
+    console.error('[SNMP] System poll error:', (err as Error).message);
   }
 }
 
@@ -160,26 +138,27 @@ async function pollBandwidth(): Promise<void> {
 
     const interval = parseInt(process.env.POLL_INTERVAL as string) / 1000;
 
-    // Buat map ifDescr berdasarkan index
-    const ifDescrMap: Record<number, string> = {};
+    // Build maps by ifIndex
+    const descrMap: Record<number, string> = {};
     for (const vb of ifDescrs) {
-      const idx = parseInt(vb.oid.split('.').pop());
-      ifDescrMap[idx] = String(vb.value);
+      descrMap[getIndex(vb.oid)] = toStr(vb.value);
     }
 
-    // Buat map outOctets berdasarkan index
-    const ifOutMap: Record<number, number> = {};
+    const outMap: Record<number, number> = {};
     for (const vb of outOctets) {
-      const idx = parseInt(vb.oid.split('.').pop());
-      ifOutMap[idx] = Number(vb.value) || 0;
+      outMap[getIndex(vb.oid)] = toNumber(vb.value);
     }
 
     for (const vb of inOctets) {
-  const ifIndex = parseInt(vb.oid.split('.').pop());
-  const ifName = ifDescrMap[ifIndex] || `if${ifIndex}`;
-  const currentIn = toNumber(vb.value);
-  const currentOut = toNumber(ifOutMap[ifIndex]) || 0;
-  const key = `if_${ifIndex}`;
+      const ifIndex = getIndex(vb.oid);
+
+      // Hanya proses interface fisik (index 1-50)
+      if (ifIndex > 50) continue;
+
+      const ifName = descrMap[ifIndex] || `if${ifIndex}`;
+      const currentIn = toNumber(vb.value);
+      const currentOut = outMap[ifIndex] || 0;
+      const key = `if_${ifIndex}`;
 
       if (prevOctets[key]) {
         const deltaIn = currentIn - prevOctets[key].in;
@@ -197,6 +176,7 @@ async function pollBandwidth(): Promise<void> {
         };
         await BandwidthLog.create(bwData);
         broadcast({ type: 'bandwidth', data: bwData });
+        console.log(`[BW] ${ifName}: in=${mbpsIn.toFixed(2)}Mbps out=${mbpsOut.toFixed(2)}Mbps`);
       }
       prevOctets[key] = { in: currentIn, out: currentOut };
     }
@@ -213,26 +193,27 @@ async function pollInterfaces(): Promise<void> {
       snmpWalk(OIDs.ifSpeed),
     ]);
 
-    // Map by index
     const statusMap: Record<number, number> = {};
     for (const vb of ifStatuses) {
-      const idx = parseInt(vb.oid.split('.').pop());
-      statusMap[idx] = Number(vb.value);
+      statusMap[getIndex(vb.oid)] = toNumber(vb.value);
     }
 
     const speedMap: Record<number, number> = {};
     for (const vb of ifSpeeds) {
-      const idx = parseInt(vb.oid.split('.').pop());
-      speedMap[idx] = Number(vb.value) || 0;
+      speedMap[getIndex(vb.oid)] = toNumber(vb.value);
     }
 
     for (const vb of ifDescrs) {
-      const ifIndex = parseInt(vb.oid.split('.').pop());
+      const ifIndex = getIndex(vb.oid);
+
+      // Hanya proses interface fisik (index 1-50)
+      if (ifIndex > 50) continue;
+
       const ifData = {
         interface_index: ifIndex,
-        interface_name: toString(vb.value),
+        interface_name: toStr(vb.value),
         status: statusMap[ifIndex] === 1 ? 'up' : 'down',
-        speed: toNumber(speedMap[ifIndex]),
+        speed: speedMap[ifIndex] || 0,
       };
       await InterfaceLog.create(ifData);
       broadcast({ type: 'interface', data: ifData });
@@ -247,9 +228,7 @@ async function pollAll(): Promise<void> {
 }
 
 export function startPoller(): void {
-  console.log(
-    `[SNMP] Poller started — interval: ${process.env.POLL_INTERVAL}ms`,
-  );
+  console.log(`[SNMP] Poller started — interval: ${process.env.POLL_INTERVAL}ms`);
   pollAll();
   setInterval(pollAll, parseInt(process.env.POLL_INTERVAL as string));
 }
