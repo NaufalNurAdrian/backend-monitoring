@@ -71,15 +71,17 @@ function snmpGet(oid: string): Promise<number> {
 function snmpWalk(oid: string): Promise<any[]> {
   return new Promise((resolve, reject) => {
     const results: any[] = [];
-    session.walk(
+    (session.walk as any)(
       oid,
       20,
       (varbinds: any[]) => {
         varbinds.forEach((vb: any) => {
           if (!snmp.isVarbindError(vb)) {
-            // konversi buffer ke string atau number
             if (Buffer.isBuffer(vb.value)) {
-              vb.value = vb.value.toString('utf8').replace(/\0/g, '').trim() || 0;
+              // konversi buffer 4 byte ke number
+              vb.value = vb.value.length >= 4 
+                ? vb.value.readUInt32BE(0) 
+                : vb.value.readUIntBE(0, vb.value.length);
             }
             results.push(vb);
           }
