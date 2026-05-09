@@ -147,11 +147,25 @@ async function pollBandwidth(): Promise<void> {
 
     const interval = parseInt(process.env.POLL_INTERVAL as string) / 1000;
 
-    for (let i = 0; i < inOctets.length; i++) {
-      const ifIndex = inOctets[i].oid.split(".").pop();
-      const ifName = ifDescrs[i]?.value || `if${ifIndex}`;
-      const currentIn = Number(inOctets[i].value) || 0;
-      const currentOut = Number(outOctets[i]?.value) || 0;
+    // Buat map ifDescr berdasarkan index
+    const ifDescrMap: Record<number, string> = {};
+    for (const vb of ifDescrs) {
+      const idx = parseInt(vb.oid.split('.').pop());
+      ifDescrMap[idx] = String(vb.value);
+    }
+
+    // Buat map outOctets berdasarkan index
+    const ifOutMap: Record<number, number> = {};
+    for (const vb of outOctets) {
+      const idx = parseInt(vb.oid.split('.').pop());
+      ifOutMap[idx] = Number(vb.value) || 0;
+    }
+
+    for (const vb of inOctets) {
+      const ifIndex = parseInt(vb.oid.split('.').pop());
+      const ifName = ifDescrMap[ifIndex] || `if${ifIndex}`;
+      const currentIn = Number(vb.value) || 0;
+      const currentOut = ifOutMap[ifIndex] || 0;
       const key = `if_${ifIndex}`;
 
       if (prevOctets[key]) {
@@ -161,7 +175,7 @@ async function pollBandwidth(): Promise<void> {
         const mbpsOut = Math.max(0, (deltaOut * 8) / interval / 1_000_000);
 
         const bwData = {
-          interface_index: parseInt(ifIndex),
+          interface_index: ifIndex,
           interface_name: ifName,
           bytes_in: currentIn,
           bytes_out: currentOut,
@@ -169,13 +183,12 @@ async function pollBandwidth(): Promise<void> {
           mbps_out: mbpsOut,
         };
         await BandwidthLog.create(bwData);
-        broadcast({ type: "bandwidth", data: bwData });
+        broadcast({ type: 'bandwidth', data: bwData });
       }
-
       prevOctets[key] = { in: currentIn, out: currentOut };
     }
   } catch (err) {
-    console.error("[SNMP] Bandwidth poll error:", (err as Error).message);
+    console.error('[SNMP] Bandwidth poll error:', (err as Error).message);
   }
 }
 
@@ -187,19 +200,32 @@ async function pollInterfaces(): Promise<void> {
       snmpWalk(OIDs.ifSpeed),
     ]);
 
-    for (let i = 0; i < ifDescrs.length; i++) {
-      const ifIndex = ifDescrs[i].oid.split(".").pop();
+    // Map by index
+    const statusMap: Record<number, number> = {};
+    for (const vb of ifStatuses) {
+      const idx = parseInt(vb.oid.split('.').pop());
+      statusMap[idx] = Number(vb.value);
+    }
+
+    const speedMap: Record<number, number> = {};
+    for (const vb of ifSpeeds) {
+      const idx = parseInt(vb.oid.split('.').pop());
+      speedMap[idx] = Number(vb.value) || 0;
+    }
+
+    for (const vb of ifDescrs) {
+      const ifIndex = parseInt(vb.oid.split('.').pop());
       const ifData = {
-        interface_index: parseInt(ifIndex),
-        interface_name: String(ifDescrs[i].value),
-        status: ifStatuses[i]?.value === 1 ? "up" : "down",
-        speed: Number(ifSpeeds[i]?.value) || 0,
+        interface_index: ifIndex,
+        interface_name: String(vb.value),
+        status: statusMap[ifIndex] === 1 ? 'up' : 'down',
+        speed: speedMap[ifIndex] || 0,
       };
       await InterfaceLog.create(ifData);
-      broadcast({ type: "interface", data: ifData });
+      broadcast({ type: 'interface', data: ifData });
     }
   } catch (err) {
-    console.error("[SNMP] Interface poll error:", (err as Error).message);
+    console.error('[SNMP] Interface poll error:', (err as Error).message);
   }
 }
 
