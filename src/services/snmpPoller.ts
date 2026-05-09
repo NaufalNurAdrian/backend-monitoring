@@ -43,14 +43,16 @@ function broadcast(data: unknown): void {
   });
 }
 
-function snmpGet(oid: string): Promise<any> {
+function snmpGet(oid: string): Promise<number> {
   return new Promise((resolve, reject) => {
-    session.get([oid], (err, varbinds) => {
+    (session.get as any)([oid], (err: any, varbinds: any[]) => {
       if (err) return reject(err);
       const vb = varbinds?.[0];
-      if (!vb) return reject(new Error('No varbind returned'));
-      if (snmp.isVarbindError(vb)) return reject(new Error(snmp.varbindError(vb)));
-      resolve(vb.value ?? 0);
+      if (!vb) return resolve(0);
+      if (snmp.isVarbindError(vb)) return resolve(0);
+      const val = vb.value;
+      if (Buffer.isBuffer(val)) resolve(val.readUInt32BE(0) || 0);
+      else resolve(Number(val) || 0);
     });
   });
 }
@@ -61,12 +63,18 @@ function snmpWalk(oid: string): Promise<any[]> {
     session.walk(
       oid,
       20,
-      (varbinds) => {
-        varbinds.forEach(vb => {
-          if (!snmp.isVarbindError(vb)) results.push(vb);
+      (varbinds: any[]) => {
+        varbinds.forEach((vb: any) => {
+          if (!snmp.isVarbindError(vb)) {
+            // konversi buffer ke string atau number
+            if (Buffer.isBuffer(vb.value)) {
+              vb.value = vb.value.toString('utf8').replace(/\0/g, '').trim() || 0;
+            }
+            results.push(vb);
+          }
         });
       },
-      (err) => {
+      (err: any) => {
         if (err) reject(err);
         else resolve(results);
       }
@@ -76,13 +84,16 @@ function snmpWalk(oid: string): Promise<any[]> {
 
 async function pollSystem(): Promise<void> {
   try {
-    const [activeSessions, maxSessions, cpuUsage, memUsage, threatCount] = await Promise.all([
+    const [activeSessions, maxSessions, cpuUsage, memUsage] = await Promise.all([
       snmpGet(OIDs.panSessions),
       snmpGet(OIDs.panMaxSessions),
       snmpGet(OIDs.panCPU),
       snmpGet(OIDs.panMemory),
-      snmpGet(OIDs.panThreat),
     ]);
+
+    // threat optional
+    let threatCount = 0;
+    try { threatCount = await snmpGet(OIDs.panThreat); } catch { threatCount = 0; }
 
     const sessionData = {
       active_sessions: activeSessions,
@@ -182,3 +193,4 @@ export function startPoller(): void {
   pollAll();
   setInterval(pollAll, parseInt(process.env.POLL_INTERVAL as string));
 }
+

@@ -37,10 +37,14 @@ function snmpGet(oid) {
                 return reject(err);
             const vb = varbinds?.[0];
             if (!vb)
-                return reject(new Error('No varbind returned'));
+                return resolve(0);
             if (snmp.isVarbindError(vb))
-                return reject(new Error(snmp.varbindError(vb)));
-            resolve(vb.value ?? 0);
+                return resolve(0);
+            const val = vb.value;
+            if (Buffer.isBuffer(val))
+                resolve(val.readUInt32BE(0) || 0);
+            else
+                resolve(Number(val) || 0);
         });
     });
 }
@@ -48,9 +52,14 @@ function snmpWalk(oid) {
     return new Promise((resolve, reject) => {
         const results = [];
         session.walk(oid, 20, (varbinds) => {
-            varbinds.forEach(vb => {
-                if (!snmp.isVarbindError(vb))
+            varbinds.forEach((vb) => {
+                if (!snmp.isVarbindError(vb)) {
+                    // konversi buffer ke string atau number
+                    if (Buffer.isBuffer(vb.value)) {
+                        vb.value = vb.value.toString('utf8').replace(/\0/g, '').trim() || 0;
+                    }
                     results.push(vb);
+                }
             });
         }, (err) => {
             if (err)
@@ -62,13 +71,20 @@ function snmpWalk(oid) {
 }
 async function pollSystem() {
     try {
-        const [activeSessions, maxSessions, cpuUsage, memUsage, threatCount] = await Promise.all([
+        const [activeSessions, maxSessions, cpuUsage, memUsage] = await Promise.all([
             snmpGet(OIDs.panSessions),
             snmpGet(OIDs.panMaxSessions),
             snmpGet(OIDs.panCPU),
             snmpGet(OIDs.panMemory),
-            snmpGet(OIDs.panThreat),
         ]);
+        // threat optional
+        let threatCount = 0;
+        try {
+            threatCount = await snmpGet(OIDs.panThreat);
+        }
+        catch {
+            threatCount = 0;
+        }
         const sessionData = {
             active_sessions: activeSessions,
             max_sessions: maxSessions,
