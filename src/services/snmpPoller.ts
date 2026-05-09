@@ -10,16 +10,27 @@ import InterfaceLog from '../models/InterfaceLog.js';
 dotenv.config();
 
 const OIDs = {
+  // Interface (RFC1213-MIB) — pakai 32-bit counter
   ifDescr:        '1.3.6.1.2.1.2.2.1.2',
   ifOperStatus:   '1.3.6.1.2.1.2.2.1.8',
   ifSpeed:        '1.3.6.1.2.1.2.2.1.5',
-  ifInOctets:     '1.3.6.1.2.1.31.1.1.1.6',
-  ifOutOctets:    '1.3.6.1.2.1.31.1.1.1.10',
-  panSessions:    '1.3.6.1.4.1.25461.2.1.2.3.2.0',
-  panMaxSessions: '1.3.6.1.4.1.25461.2.1.2.3.3.0',
-  panCPU:         '1.3.6.1.4.1.25461.2.1.2.3.1.0',
-  panMemory:      '1.3.6.1.4.1.25461.2.1.2.3.4.0',
-  panThreat:      '1.3.6.1.4.1.25461.2.1.2.1.19.0',
+  ifInOctets:     '1.3.6.1.2.1.2.2.1.10',   // ✅ bukan 31.1.1.1.6
+  ifOutOctets:    '1.3.6.1.2.1.2.2.1.16',   // ✅ bukan 31.1.1.1.10
+
+  // PAN-COMMON-MIB — OID yang benar
+  panSessionUtil:    '1.3.6.1.4.1.25461.2.1.2.3.1.0',  // % session utilization
+  panSessionMax:     '1.3.6.1.4.1.25461.2.1.2.3.2.0',  // max sessions
+  panSessionActive:  '1.3.6.1.4.1.25461.2.1.2.3.3.0',  // total active sessions
+  panSessionTCP:     '1.3.6.1.4.1.25461.2.1.2.3.4.0',  // active TCP sessions
+  panSessionUDP:     '1.3.6.1.4.1.25461.2.1.2.3.5.0',  // active UDP sessions
+  panSessionICMP:    '1.3.6.1.4.1.25461.2.1.2.3.6.0',  // active ICMP sessions
+
+  // CPU — HOST-RESOURCES-MIB
+  panCPUMgmt:     '1.3.6.1.2.1.25.3.3.1.2.1',  // management plane CPU
+  panCPUData:     '1.3.6.1.2.1.25.3.3.1.2.2',  // dataplane CPU
+
+  // Uptime
+  sysUptime:      '1.3.6.1.2.1.25.1.1.0',
 };
 
 const session = snmp.createSession(
@@ -84,35 +95,37 @@ function snmpWalk(oid: string): Promise<any[]> {
 
 async function pollSystem(): Promise<void> {
   try {
-    const [activeSessions, maxSessions, cpuUsage, memUsage] = await Promise.all([
-      snmpGet(OIDs.panSessions),
-      snmpGet(OIDs.panMaxSessions),
-      snmpGet(OIDs.panCPU),
-      snmpGet(OIDs.panMemory),
+    const [
+      sessionUtil,
+      sessionMax,
+      sessionActive,
+      sessionTCP,
+      sessionUDP,
+      cpuMgmt,
+      cpuData,
+    ] = await Promise.all([
+      snmpGet(OIDs.panSessionUtil),
+      snmpGet(OIDs.panSessionMax),
+      snmpGet(OIDs.panSessionActive),
+      snmpGet(OIDs.panSessionTCP),
+      snmpGet(OIDs.panSessionUDP),
+      snmpGet(OIDs.panCPUMgmt),
+      snmpGet(OIDs.panCPUData),
     ]);
 
-    // threat optional
-    let threatCount = 0;
-    try { threatCount = await snmpGet(OIDs.panThreat); } catch { threatCount = 0; }
-
     const sessionData = {
-      active_sessions: activeSessions,
-      max_sessions: maxSessions,
-      cpu_usage: cpuUsage,
-      memory_usage: memUsage,
+      active_sessions: sessionActive,
+      max_sessions: sessionMax,
+      cpu_usage: cpuMgmt,
+      memory_usage: cpuData,
     };
+
     await SessionLog.create(sessionData);
     broadcast({ type: 'session', data: sessionData });
 
-    const threatData = {
-      threat_count: threatCount,
-      threat_type: 'total',
-      severity: 'mixed',
-    };
-    await ThreatLog.create(threatData);
-    broadcast({ type: 'threat', data: threatData });
-
-    console.log(`[SNMP] Sessions: ${activeSessions} | CPU: ${cpuUsage}% | Threats: ${threatCount}`);
+    console.log(
+      `[SNMP] Active: ${sessionActive} | Max: ${sessionMax} | CPU Mgmt: ${cpuMgmt}% | CPU Data: ${cpuData}%`
+    );
   } catch (err) {
     console.error('[SNMP] System poll error:', (err as Error).message);
   }
