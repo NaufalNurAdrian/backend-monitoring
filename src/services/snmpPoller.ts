@@ -77,17 +77,7 @@ function snmpWalk(oid: string): Promise<any[]> {
       (varbinds: any[]) => {
         varbinds.forEach((vb: any) => {
           if (!snmp.isVarbindError(vb)) {
-            if (Buffer.isBuffer(vb.value)) {
-              if (vb.value.length === 0) {
-                vb.value = 0;
-              } else if (vb.value.length >= 4) {
-                vb.value = vb.value.readUInt32BE(0);
-              } else {
-                // string seperti IP address atau nama interface
-                vb.value = vb.value.toString("utf8").replace(/\0/g, "").trim();
-              }
-            }
-            results.push(vb);
+            results.push(...vb);
           }
         });
       },
@@ -97,6 +87,22 @@ function snmpWalk(oid: string): Promise<any[]> {
       },
     );
   });
+}
+
+function toNumber(val: any): number {
+  if (Buffer.isBuffer(val)) {
+    if (val.length === 0) return 0;
+    if (val.length >= 4) return val.readUInt32BE(0);
+    return val.readUIntBE(0, val.length);
+  }
+  return Number(val) || 0;
+}
+
+function toString(val: any): string {
+  if (Buffer.isBuffer(val)) {
+    return val.toString('utf8').replace(/\0/g, '').trim();
+  }
+  return String(val);
 }
 
 async function pollSystem(): Promise<void> {

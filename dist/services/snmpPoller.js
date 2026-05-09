@@ -61,19 +61,7 @@ function snmpWalk(oid) {
         session.walk(oid, 20, (varbinds) => {
             varbinds.forEach((vb) => {
                 if (!snmp.isVarbindError(vb)) {
-                    if (Buffer.isBuffer(vb.value)) {
-                        if (vb.value.length === 0) {
-                            vb.value = 0;
-                        }
-                        else if (vb.value.length >= 4) {
-                            vb.value = vb.value.readUInt32BE(0);
-                        }
-                        else {
-                            // string seperti IP address atau nama interface
-                            vb.value = vb.value.toString("utf8").replace(/\0/g, "").trim();
-                        }
-                    }
-                    results.push(vb);
+                    results.push(...vb);
                 }
             });
         }, (err) => {
@@ -83,6 +71,22 @@ function snmpWalk(oid) {
                 resolve(results);
         });
     });
+}
+function toNumber(val) {
+    if (Buffer.isBuffer(val)) {
+        if (val.length === 0)
+            return 0;
+        if (val.length >= 4)
+            return val.readUInt32BE(0);
+        return val.readUIntBE(0, val.length);
+    }
+    return Number(val) || 0;
+}
+function toString(val) {
+    if (Buffer.isBuffer(val)) {
+        return val.toString('utf8').replace(/\0/g, '').trim();
+    }
+    return String(val);
 }
 async function pollSystem() {
     try {
@@ -117,11 +121,23 @@ async function pollBandwidth() {
             snmpWalk(OIDs.ifDescr),
         ]);
         const interval = parseInt(process.env.POLL_INTERVAL) / 1000;
-        for (let i = 0; i < inOctets.length; i++) {
-            const ifIndex = inOctets[i].oid.split(".").pop();
-            const ifName = ifDescrs[i]?.value || `if${ifIndex}`;
-            const currentIn = Number(inOctets[i].value) || 0;
-            const currentOut = Number(outOctets[i]?.value) || 0;
+        // Buat map ifDescr berdasarkan index
+        const ifDescrMap = {};
+        for (const vb of ifDescrs) {
+            const idx = parseInt(vb.oid.split('.').pop());
+            ifDescrMap[idx] = String(vb.value);
+        }
+        // Buat map outOctets berdasarkan index
+        const ifOutMap = {};
+        for (const vb of outOctets) {
+            const idx = parseInt(vb.oid.split('.').pop());
+            ifOutMap[idx] = Number(vb.value) || 0;
+        }
+        for (const vb of inOctets) {
+            const ifIndex = parseInt(vb.oid.split('.').pop());
+            const ifName = ifDescrMap[ifIndex] || `if${ifIndex}`;
+            const currentIn = Number(vb.value) || 0;
+            const currentOut = ifOutMap[ifIndex] || 0;
             const key = `if_${ifIndex}`;
             if (prevOctets[key]) {
                 const deltaIn = currentIn - prevOctets[key].in;
@@ -129,7 +145,7 @@ async function pollBandwidth() {
                 const mbpsIn = Math.max(0, (deltaIn * 8) / interval / 1_000_000);
                 const mbpsOut = Math.max(0, (deltaOut * 8) / interval / 1_000_000);
                 const bwData = {
-                    interface_index: parseInt(ifIndex),
+                    interface_index: ifIndex,
                     interface_name: ifName,
                     bytes_in: currentIn,
                     bytes_out: currentOut,
@@ -137,13 +153,13 @@ async function pollBandwidth() {
                     mbps_out: mbpsOut,
                 };
                 await BandwidthLog.create(bwData);
-                broadcast({ type: "bandwidth", data: bwData });
+                broadcast({ type: 'bandwidth', data: bwData });
             }
             prevOctets[key] = { in: currentIn, out: currentOut };
         }
     }
     catch (err) {
-        console.error("[SNMP] Bandwidth poll error:", err.message);
+        console.error('[SNMP] Bandwidth poll error:', err.message);
     }
 }
 async function pollInterfaces() {
@@ -153,20 +169,31 @@ async function pollInterfaces() {
             snmpWalk(OIDs.ifOperStatus),
             snmpWalk(OIDs.ifSpeed),
         ]);
-        for (let i = 0; i < ifDescrs.length; i++) {
-            const ifIndex = ifDescrs[i].oid.split(".").pop();
+        // Map by index
+        const statusMap = {};
+        for (const vb of ifStatuses) {
+            const idx = parseInt(vb.oid.split('.').pop());
+            statusMap[idx] = Number(vb.value);
+        }
+        const speedMap = {};
+        for (const vb of ifSpeeds) {
+            const idx = parseInt(vb.oid.split('.').pop());
+            speedMap[idx] = Number(vb.value) || 0;
+        }
+        for (const vb of ifDescrs) {
+            const ifIndex = parseInt(vb.oid.split('.').pop());
             const ifData = {
-                interface_index: parseInt(ifIndex),
-                interface_name: String(ifDescrs[i].value),
-                status: ifStatuses[i]?.value === 1 ? "up" : "down",
-                speed: Number(ifSpeeds[i]?.value) || 0,
+                interface_index: ifIndex,
+                interface_name: String(vb.value),
+                status: statusMap[ifIndex] === 1 ? 'up' : 'down',
+                speed: speedMap[ifIndex] || 0,
             };
             await InterfaceLog.create(ifData);
-            broadcast({ type: "interface", data: ifData });
+            broadcast({ type: 'interface', data: ifData });
         }
     }
     catch (err) {
-        console.error("[SNMP] Interface poll error:", err.message);
+        console.error('[SNMP] Interface poll error:', err.message);
     }
 }
 async function pollAll() {
