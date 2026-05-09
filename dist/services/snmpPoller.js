@@ -61,7 +61,7 @@ function snmpWalk(oid) {
         session.walk(oid, 20, (varbinds) => {
             varbinds.forEach((vb) => {
                 if (!snmp.isVarbindError(vb)) {
-                    results.push(...vb);
+                    results.push(vb);
                 }
             });
         }, (err) => {
@@ -84,8 +84,18 @@ function toNumber(val) {
 }
 function toString(val) {
     if (Buffer.isBuffer(val)) {
-        return val.toString('utf8').replace(/\0/g, '').trim();
+        // Coba UTF-8 dulu
+        const str = val.toString('utf8').replace(/\0/g, '').trim();
+        // Kalau hasilnya printable string, pakai
+        if (/^[\x20-\x7E]*$/.test(str) && str.length > 0)
+            return str;
+        // Kalau tidak, kembalikan sebagai number
+        if (val.length >= 4)
+            return String(val.readUInt32BE(0));
+        return String(val.readUIntBE(0, val.length || 1));
     }
+    if (typeof val === 'string')
+        return val;
     return String(val);
 }
 async function pollSystem() {
@@ -136,8 +146,8 @@ async function pollBandwidth() {
         for (const vb of inOctets) {
             const ifIndex = parseInt(vb.oid.split('.').pop());
             const ifName = ifDescrMap[ifIndex] || `if${ifIndex}`;
-            const currentIn = Number(vb.value) || 0;
-            const currentOut = ifOutMap[ifIndex] || 0;
+            const currentIn = toNumber(vb.value);
+            const currentOut = toNumber(ifOutMap[ifIndex]) || 0;
             const key = `if_${ifIndex}`;
             if (prevOctets[key]) {
                 const deltaIn = currentIn - prevOctets[key].in;
@@ -184,9 +194,9 @@ async function pollInterfaces() {
             const ifIndex = parseInt(vb.oid.split('.').pop());
             const ifData = {
                 interface_index: ifIndex,
-                interface_name: String(vb.value),
+                interface_name: toString(vb.value),
                 status: statusMap[ifIndex] === 1 ? 'up' : 'down',
-                speed: speedMap[ifIndex] || 0,
+                speed: toNumber(speedMap[ifIndex]),
             };
             await InterfaceLog.create(ifData);
             broadcast({ type: 'interface', data: ifData });

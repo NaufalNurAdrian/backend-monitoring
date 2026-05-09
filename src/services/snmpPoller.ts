@@ -100,8 +100,15 @@ function toNumber(val: any): number {
 
 function toString(val: any): string {
   if (Buffer.isBuffer(val)) {
-    return val.toString('utf8').replace(/\0/g, '').trim();
+    // Coba UTF-8 dulu
+    const str = val.toString('utf8').replace(/\0/g, '').trim();
+    // Kalau hasilnya printable string, pakai
+    if (/^[\x20-\x7E]*$/.test(str) && str.length > 0) return str;
+    // Kalau tidak, kembalikan sebagai number
+    if (val.length >= 4) return String(val.readUInt32BE(0));
+    return String(val.readUIntBE(0, val.length || 1));
   }
+  if (typeof val === 'string') return val;
   return String(val);
 }
 
