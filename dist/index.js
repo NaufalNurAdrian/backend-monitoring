@@ -35,5 +35,5 @@ sequelize.sync({ alter: true })
     });
 })
     .catch((err) => {
-    console.error('[DB] Error:', err.message);
+    console.error('[DB] Error:', err);
 });

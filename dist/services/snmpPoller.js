@@ -1,9 +1,9 @@
-import snmp from 'snmp-native';
+import * as snmp from 'net-snmp';
+import dotenv from 'dotenv';
 import BandwidthLog from '../models/BandwidthLog.js';
 import ThreatLog from '../models/ThreatLog.js';
 import SessionLog from '../models/SessionLog.js';
 import InterfaceLog from '../models/InterfaceLog.js';
-import dotenv from 'dotenv';
 dotenv.config();
 const OIDs = {
     ifDescr: '1.3.6.1.2.1.2.2.1.2',
@@ -17,11 +17,7 @@ const OIDs = {
     panMemory: '1.3.6.1.4.1.25461.2.1.2.3.4.0',
     panThreat: '1.3.6.1.4.1.25461.2.1.2.1.19.0',
 };
-const session = new snmp.Session({
-    host: process.env.PALO_ALTO_IP,
-    community: process.env.SNMP_COMMUNITY,
-    version: 1,
-});
+const session = snmp.createSession(process.env.PALO_ALTO_IP, process.env.SNMP_COMMUNITY, { version: snmp.Version2c });
 let prevOctets = {};
 let wsClients = [];
 export function setWsClients(clients) {
@@ -36,27 +32,37 @@ function broadcast(data) {
 }
 function snmpGet(oid) {
     return new Promise((resolve, reject) => {
-        session.get({ oid }, (err, varbinds) => {
+        session.get([oid], (err, varbinds) => {
             if (err)
-                reject(err);
-            else
-                resolve(varbinds[0]?.value ?? 0);
+                return reject(err);
+            const vb = varbinds?.[0];
+            if (!vb)
+                return reject(new Error('No varbind returned'));
+            if (snmp.isVarbindError(vb))
+                return reject(new Error(snmp.varbindError(vb)));
+            resolve(vb.value ?? 0);
         });
     });
 }
 function snmpWalk(oid) {
     return new Promise((resolve, reject) => {
-        session.walk({ oid }, (err, varbinds) => {
+        const results = [];
+        session.walk(oid, 20, (varbinds) => {
+            varbinds.forEach(vb => {
+                if (!snmp.isVarbindError(vb))
+                    results.push(vb);
+            });
+        }, (err) => {
             if (err)
                 reject(err);
             else
-                resolve(varbinds);
+                resolve(results);
         });
     });
 }
 async function pollSystem() {
     try {
-        const [activeSessions, maxSessions, cpuUsage, memUsage, threatCount,] = await Promise.all([
+        const [activeSessions, maxSessions, cpuUsage, memUsage, threatCount] = await Promise.all([
             snmpGet(OIDs.panSessions),
             snmpGet(OIDs.panMaxSessions),
             snmpGet(OIDs.panCPU),
@@ -70,20 +76,14 @@ async function pollSystem() {
             memory_usage: memUsage,
         };
         await SessionLog.create(sessionData);
-        broadcast({
-            type: 'session',
-            data: sessionData,
-        });
+        broadcast({ type: 'session', data: sessionData });
         const threatData = {
             threat_count: threatCount,
             threat_type: 'total',
             severity: 'mixed',
         };
         await ThreatLog.create(threatData);
-        broadcast({
-            type: 'threat',
-            data: threatData,
-        });
+        broadcast({ type: 'threat', data: threatData });
         console.log(`[SNMP] Sessions: ${activeSessions} | CPU: ${cpuUsage}% | Threats: ${threatCount}`);
     }
     catch (err) {
@@ -118,15 +118,9 @@ async function pollBandwidth() {
                     mbps_out: mbpsOut,
                 };
                 await BandwidthLog.create(bwData);
-                broadcast({
-                    type: 'bandwidth',
-                    data: bwData,
-                });
+                broadcast({ type: 'bandwidth', data: bwData });
             }
-            prevOctets[key] = {
-                in: currentIn,
-                out: currentOut,
-            };
+            prevOctets[key] = { in: currentIn, out: currentOut };
         }
     }
     catch (err) {
@@ -145,16 +139,11 @@ async function pollInterfaces() {
             const ifData = {
                 interface_index: parseInt(ifIndex),
                 interface_name: ifDescrs[i].value,
-                status: ifStatuses[i]?.value === 1
-                    ? 'up'
-                    : 'down',
+                status: ifStatuses[i]?.value === 1 ? 'up' : 'down',
                 speed: ifSpeeds[i]?.value || 0,
             };
             await InterfaceLog.create(ifData);
-            broadcast({
-                type: 'interface',
-                data: ifData,
-            });
+            broadcast({ type: 'interface', data: ifData });
         }
     }
     catch (err) {
@@ -162,11 +151,7 @@ async function pollInterfaces() {
     }
 }
 async function pollAll() {
-    await Promise.all([
-        pollSystem(),
-        pollBandwidth(),
-        pollInterfaces(),
-    ]);
+    await Promise.all([pollSystem(), pollBandwidth(), pollInterfaces()]);
 }
 export function startPoller() {
     console.log(`[SNMP] Poller started — interval: ${process.env.POLL_INTERVAL}ms`);
