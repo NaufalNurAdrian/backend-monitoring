@@ -66,6 +66,10 @@ function getIndex(oid: string): number {
   return parseInt(oid.split('.').pop() ?? '0');
 }
 
+function isValidIfName(name: string): boolean {
+  return /^[\x20-\x7E]+$/.test(name) && name.length > 0 && name.length < 50;
+}
+
 function snmpGet(oid: string): Promise<number> {
   return new Promise((resolve, reject) => {
     (session.get as any)([oid], (err: any, varbinds: any[]) => {
@@ -138,10 +142,12 @@ async function pollBandwidth(): Promise<void> {
 
     const interval = parseInt(process.env.POLL_INTERVAL as string) / 1000;
 
-    // Build maps by ifIndex
     const descrMap: Record<number, string> = {};
     for (const vb of ifDescrs) {
-      descrMap[getIndex(vb.oid)] = toStr(vb.value);
+      const name = toStr(vb.value);
+      if (isValidIfName(name)) {
+        descrMap[getIndex(vb.oid)] = name;
+      }
     }
 
     const outMap: Record<number, number> = {};
@@ -151,11 +157,11 @@ async function pollBandwidth(): Promise<void> {
 
     for (const vb of inOctets) {
       const ifIndex = getIndex(vb.oid);
-
-      // Hanya proses interface fisik (index 1-50)
       if (ifIndex > 50) continue;
 
-      const ifName = descrMap[ifIndex] || `if${ifIndex}`;
+      const ifName = descrMap[ifIndex];
+      if (!ifName || !isValidIfName(ifName)) continue;
+
       const currentIn = toNumber(vb.value);
       const currentOut = outMap[ifIndex] || 0;
       const key = `if_${ifIndex}`;
@@ -205,13 +211,14 @@ async function pollInterfaces(): Promise<void> {
 
     for (const vb of ifDescrs) {
       const ifIndex = getIndex(vb.oid);
-
-      // Hanya proses interface fisik (index 1-50)
       if (ifIndex > 50) continue;
+
+      const ifName = toStr(vb.value);
+      if (!isValidIfName(ifName)) continue;
 
       const ifData = {
         interface_index: ifIndex,
-        interface_name: toStr(vb.value),
+        interface_name: ifName,
         status: statusMap[ifIndex] === 1 ? 'up' : 'down',
         speed: speedMap[ifIndex] || 0,
       };

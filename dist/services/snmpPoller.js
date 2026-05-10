@@ -53,6 +53,9 @@ function toStr(val) {
 function getIndex(oid) {
     return parseInt(oid.split('.').pop() ?? '0');
 }
+function isValidIfName(name) {
+    return /^[\x20-\x7E]+$/.test(name) && name.length > 0 && name.length < 50;
+}
 function snmpGet(oid) {
     return new Promise((resolve, reject) => {
         session.get([oid], (err, varbinds) => {
@@ -116,10 +119,12 @@ async function pollBandwidth() {
             snmpWalk(OIDs.ifDescr),
         ]);
         const interval = parseInt(process.env.POLL_INTERVAL) / 1000;
-        // Build maps by ifIndex
         const descrMap = {};
         for (const vb of ifDescrs) {
-            descrMap[getIndex(vb.oid)] = toStr(vb.value);
+            const name = toStr(vb.value);
+            if (isValidIfName(name)) {
+                descrMap[getIndex(vb.oid)] = name;
+            }
         }
         const outMap = {};
         for (const vb of outOctets) {
@@ -127,10 +132,11 @@ async function pollBandwidth() {
         }
         for (const vb of inOctets) {
             const ifIndex = getIndex(vb.oid);
-            // Hanya proses interface fisik (index 1-50)
             if (ifIndex > 50)
                 continue;
-            const ifName = descrMap[ifIndex] || `if${ifIndex}`;
+            const ifName = descrMap[ifIndex];
+            if (!ifName || !isValidIfName(ifName))
+                continue;
             const currentIn = toNumber(vb.value);
             const currentOut = outMap[ifIndex] || 0;
             const key = `if_${ifIndex}`;
@@ -175,12 +181,14 @@ async function pollInterfaces() {
         }
         for (const vb of ifDescrs) {
             const ifIndex = getIndex(vb.oid);
-            // Hanya proses interface fisik (index 1-50)
             if (ifIndex > 50)
+                continue;
+            const ifName = toStr(vb.value);
+            if (!isValidIfName(ifName))
                 continue;
             const ifData = {
                 interface_index: ifIndex,
-                interface_name: toStr(vb.value),
+                interface_name: ifName,
                 status: statusMap[ifIndex] === 1 ? 'up' : 'down',
                 speed: speedMap[ifIndex] || 0,
             };

@@ -11,7 +11,10 @@ import sessionRoutes from './routes/sessions.js';
 import interfaceRoutes from './routes/interfaces.js';
 dotenv.config();
 const app = express();
-app.use(cors());
+app.use(cors({
+    origin: '*', // sementara allow all untuk testing
+    methods: ['GET', 'POST', 'OPTIONS'],
+}));
 app.use(express.json());
 app.use('/api/bandwidth', bandwidthRoutes);
 app.use('/api/threats', threatRoutes);
