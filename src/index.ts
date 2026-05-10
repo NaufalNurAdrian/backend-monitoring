@@ -19,12 +19,8 @@ dotenv.config();
 const app = express();
 
 app.use(cors({
-  origin: [
-    'http://localhost:3000',
-    'https://monitoring.quantexnetworks.com',
-  ],
-  methods: ['GET', 'POST'],
-  credentials: true,
+  origin: '*',  // sementara allow all untuk testing
+  methods: ['GET', 'POST', 'OPTIONS'],
 }));
 
 app.use(express.json());
